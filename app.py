@@ -3,239 +3,222 @@ import requests
 import os
 from datetime import datetime
 import time
+import pytz
+from streamlit.components.v1 import html
+import base64
+from typing import Generator
+import json
+from PIL import Image
 
-# --- Streamlit Page Config ---
+# --- Page Configuration ---
 st.set_page_config(
     page_title="Chakri's AI Assistant",
     page_icon="🤖",
     layout="centered",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# --- Custom CSS ---
+# --- Custom CSS for Advanced UI ---
 st.markdown("""
     <style>
-        /* Main Chat Container */
         .main {
-            max-width: 800px !important;
+            max-width: 900px !important;
+            padding-bottom: 50px;
         }
-        
-        /* Chat Messages */
         .stChatMessage {
-            padding: 16px 20px;
+            padding: 12px 16px;
             border-radius: 18px;
-            margin-bottom: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            max-width: 80%;
-            line-height: 1.5;
-            font-size: 16px;
+            margin-bottom: 8px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            max-width: 85%;
         }
-        
         .stChatMessage.user {
-            background-color: #f5f8ff;
+            background-color: #f0f7ff;
             margin-left: auto;
             border-bottom-right-radius: 4px;
-            border: 1px solid #e1e8ff;
         }
-        
         .stChatMessage.assistant {
-            background-color: #f9f9f9;
+            background-color: #f8f9fa;
             margin-right: auto;
             border-bottom-left-radius: 4px;
-            border: 1px solid #eaeaea;
         }
-        
-        /* Input Area */
         .stTextInput>div>div>input {
             border-radius: 24px !important;
-            padding: 14px 18px !important;
-            font-size: 16px !important;
+            padding: 12px 16px !important;
         }
-        
-        /* Footer Position */
-        .footer-container {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: white;
-            padding: 10px 0;
-            text-align: center;
-            border-top: 1px solid #eee;
-            z-index: 100;
+        .stButton>button {
+            border-radius: 20px !important;
+            padding: 8px 16px !important;
         }
-        
-        .footer {
-            font-size: 0.8em;
-            color: #666;
-            margin: 0 auto;
-            max-width: 800px;
-            padding: 0 20px;
-        }
-        
-        /* Adjust chat container padding to prevent footer overlap */
-        .stChatFadeIn {
-            padding-bottom: 60px !important;
-        }
-        
-        /* Modern Spinner */
-        .spinner {
-            width: 56px;
-            height: 56px;
-            display: grid;
-            border: 4.5px solid #0000;
-            border-radius: 50%;
-            border-color: #dbdcef #0000;
-            animation: spinner-e04l1k 1s infinite linear;
-            margin: 0 auto;
-        }
-        
-        .spinner::before,
-        .spinner::after {
-            content: "";
-            grid-area: 1/1;
-            margin: 2.2px;
-            border: inherit;
-            border-radius: 50%;
-        }
-        
-        .spinner::before {
-            border-color: #474bff #0000;
-            animation: inherit;
-            animation-duration: 0.5s;
-            animation-direction: reverse;
-        }
-        
-        .spinner::after {
-            margin: 8.9px;
-        }
-        
-        @keyframes spinner-e04l1k {
-            100% {
-                transform: rotate(1turn);
-            }
-        }
-        
         .typing-indicator {
-            display: flex;
-            justify-content: center;
-            padding: 20px 0;
+            display: inline-flex;
+            align-items: center;
+        }
+        .typing-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #6c757d;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: blink 1.4s infinite both;
+        }
+        .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        .welcome-message {
+            animation: fadeIn 0.8s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 """, unsafe_allow_html=True)
 
-# --- Helper Functions ---
-def query_llama3(prompt, history, model="llama3", temperature=0.7):
-    """Function to call Ollama API"""
-    url = "http://localhost:11434/api/chat"
-    payload = {
-        "model": model,
-        "messages": history + [{"role": "user", "content": prompt}],
-        "stream": False,
-        "options": {"temperature": temperature}
-    }
-    try:
-        response = requests.post(url, json=payload)
-        if response.status_code == 200:
-            return response.json()["message"]["content"]
-        return f"❌ Error: API returned status code {response.status_code}"
-    except Exception as e:
-        return f"❌ Error: {str(e)}"
-
 # --- Session State Initialization ---
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": "You are Chakri's AI assistant. Be helpful, friendly, and offline."}
-    ]
-    
+    st.session_state.messages = []
+if "first_visit" not in st.session_state:
+    st.session_state.first_visit = True
 if "model" not in st.session_state:
-    st.session_state.model = "llama3"
-    
+    st.session_state.model = "mistral"
 if "temperature" not in st.session_state:
     st.session_state.temperature = 0.7
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+
+# --- Helper Functions ---
+def get_greeting():
+    hour = datetime.now().hour
+    if 5 <= hour < 12:
+        return "Good morning"
+    elif 12 <= hour < 17:
+        return "Good afternoon"
+    elif 17 <= hour < 22:
+        return "Good evening"
+    else:
+        return "Good night"
+
+def typing_animation():
+    return """
+    <div class="typing-indicator">
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+        <div class="typing-dot"></div>
+    </div>
+    """
+
+def get_current_time():
+    return datetime.now().strftime("%I:%M %p")
+
+def query_huggingface(prompt):
+    headers = {"Authorization": f"Bearer {st.secrets['HF_TOKEN']}"}
+    API_URL = "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.1"
+
+    payload = {
+        "inputs": prompt,
+        "parameters": {"temperature": st.session_state.temperature, "max_new_tokens": 250}
+    }
+
+    response = requests.post(API_URL, headers=headers, json=payload)
+    result = response.json()
+
+    try:
+        return result[0]["generated_text"]
+    except:
+        return "⚠️ Error generating response. The model may be warming up."
+
+# --- Welcome Message ---
+if st.session_state.first_visit:
+    greeting = get_greeting()
+    current_time = get_current_time()
+    st.markdown(f"""
+        <div class="welcome-message">
+            <h3>{greeting}! I'm Chakri's HuggingFace Assistant 🤖</h3>
+            <p>It's currently {current_time}. How can I help you today?</p>
+            <p><small>Try asking me anything or use the sidebar to customize your experience.</small></p>
+        </div>
+    """, unsafe_allow_html=True)
+    st.session_state.first_visit = False
 
 # --- Sidebar Settings ---
 with st.sidebar:
     st.title("⚙️ Settings")
-    
-    # Model Selection
-    st.session_state.model = st.selectbox(
-        "Model",
-        ["llama3", "llama3-70b", "mistral", "phi3"],
-        index=0
-    )
-    
-    # Temperature Slider
-    st.session_state.temperature = st.slider(
-        "Creativeness",
-        min_value=0.1,
-        max_value=1.0,
-        value=0.7,
-        step=0.1
-    )
-    
-    # Conversation Management
+    st.session_state.temperature = st.slider("Creativity (Temperature)", 0.1, 1.0, 0.7, 0.1)
+    st.session_state.dark_mode = st.toggle("Dark Mode", value=False)
     st.markdown("---")
-    st.markdown("### 💬 Conversation")
-    if st.button("🧹 Clear Chat", use_container_width=True):
-        st.session_state.messages = [
-            {"role": "system", "content": "You are Chakri's AI assistant. Be helpful, friendly, and offline."}
-        ]
-        if os.path.exists("chat_log.txt"):
-            os.remove("chat_log.txt")
+    st.markdown("### 📝 Conversation History")
+    if st.button("🧹 Clear Chat"):
+        st.session_state.messages = []
         st.rerun()
+    if st.button("💾 Export Chat"):
+        if st.session_state.messages:
+            chat_text = "\n".join(f"{msg['role'].capitalize()}: {msg['content']}" for msg in st.session_state.messages)
+            st.download_button(
+                label="Download Chat",
+                data=chat_text,
+                file_name=f"chat_history_{datetime.now().strftime('%Y%m%d')}.txt",
+                mime="text/plain"
+            )
+        else:
+            st.warning("No conversation to export")
 
 # --- Main Chat Interface ---
 st.title("💬 Chakri's AI Assistant")
 
-# Display chat history
-for message in st.session_state.messages[1:]:  # Skip system message
+# Display messages
+for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # Chat input
-user_input = st.chat_input("Message AI Assistant...")
+if prompt := st.chat_input("Message Chakri's AI..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        full_response = ""
+        for chunk in prompt.split():
+            full_response += chunk + " "
+            time.sleep(0.05)
+            message_placeholder.markdown(full_response + typing_animation(), unsafe_allow_html=True)
+        response = query_huggingface(prompt)
+        message_placeholder.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
 
-# Footer (positioned right below the input)
-st.markdown("""
-    <div class="footer-container">
-        <div class="footer">
-            Developed by Chakri • Powered by LLaMA 3 via Ollama
-        </div>
+# --- Feature Highlights ---
+st.markdown("---")
+st.markdown("### ✨ Features")
+col1, col2, col3, col4, col5 = st.columns(5)
+with col1:
+    st.markdown("**🌙 Dark Mode**<br><small>Toggle theme style</small>", unsafe_allow_html=True)
+with col2:
+    st.markdown("**🧠 Persistent Memory**<br><small>Session-based chat</small>", unsafe_allow_html=True)
+with col3:
+    st.markdown("**💾 Export Chat**<br><small>Save conversations</small>", unsafe_allow_html=True)
+with col4:
+    st.markdown("**🧹 Clear All**<br><small>Start fresh anytime</small>", unsafe_allow_html=True)
+with col5:
+    st.markdown("**🤗 Hugging Face API**<br><small>Powerful LLM</small>", unsafe_allow_html=True)
+
+# --- Footer ---
+st.markdown(f"""
+    <div style="text-align: center; margin-top: 50px; color: #6c757d; font-size: 0.9em;">
+        <p>Powered by Hugging Face • Made with ❤️ by Chakri</p>
+        <p>Last updated: {datetime.now().strftime('%Y-%m-%d')}</p>
     </div>
 """, unsafe_allow_html=True)
 
-# Handle user input after footer is rendered
-if user_input:
-    # Add user message to chat history and display immediately
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
-    
-    # Display empty assistant message placeholder with spinner
-    with st.chat_message("assistant"):
-        message_placeholder = st.empty()
-        message_placeholder.markdown("""
-            <div class="typing-indicator">
-                <div class="spinner"></div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        # Get response from LLM
-        reply = query_llama3(
-            user_input, 
-            st.session_state.messages[1:],
-            model=st.session_state.model,
-            temperature=st.session_state.temperature
-        )
-        
-        # Display final message
-        message_placeholder.markdown(reply)
-    
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    
-    # Save to file
-    with open("chat_log.txt", "a", encoding="utf-8") as f:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        f.write(f"[{now}] User: {user_input}\n[{now}] Assistant: {reply}\n\n")
+# --- Dark Mode Script ---
+if st.session_state.dark_mode:
+    st.markdown("""
+        <script>
+            document.body.style.backgroundColor = "#0e1117";
+            document.body.style.color = "#f8f9fa";
+        </script>
+    """, unsafe_allow_html=True)
